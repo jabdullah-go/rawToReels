@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Caption render preview</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; background: #101116; color: #f4f2ed; font: 15px/1.4 Inter, Arial, sans-serif; display: grid; place-items: center; }
+  main { width: min(100% - 32px, 980px); padding: 28px 0; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { margin: 0 0 18px; color: #a9a9b1; }
+  .stage { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #171823; overflow: hidden; border-radius: 12px; border: 1px solid #34343b; }
+  .stage::before { content: ""; position: absolute; inset: 0; background: radial-gradient(ellipse at 52% 42%, #454656 0%, #242633 43%, #12141d 100%); }
+  .stage video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: none; }
+  .stage.has-video video { display: block; }
+  .placeholder { position: absolute; inset: 0; display: grid; place-content: center; gap: 9px; text-align: center; color: #a8aab8; padding: 24px; }
+  .placeholder strong { color: #dbdce5; font-size: clamp(17px, 3vw, 27px); }
+  .stage.has-video .placeholder { display: none; }
+  .caption-layer { position: absolute; inset: 0; pointer-events: none; font-family: Inter, Arial, sans-serif; color: #fff; font-weight: 800; font-size: clamp(17px, 3.3vw, 54px); line-height: 1.14; letter-spacing: -0.025em; text-align: center; text-shadow: 0 2px 4px rgb(0 0 0 / 85%), 0 0 14px rgb(0 0 0 / 65%); }
+  .caption-group { position: absolute; left: 8%; right: 8%; bottom: 8%; display: none; }
+  .caption-group.is-visible { display: block; }
+  .caption-line { display: block; }
+  .caption-word { display: inline-block; white-space: pre; }
+  .caption-word.is-flavor, .caption-word.is-reaction { color: #ffe66d; }
+  .caption-word.is-artificial { color: #ffd1a8; }
+  .caption-word.is-active { animation: wordPulse var(--word-duration, 0s) ease-out both; }
+  @keyframes wordPulse { from { transform: scale(1.08); filter: brightness(1.25); } to { transform: scale(1); filter: brightness(1); } }
+  @media (prefers-reduced-motion: reduce) { .caption-word.is-active { animation: none; text-decoration: underline; } }
+  .controls { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 16px; }
+  button, .file-picker { border: 1px solid #41434c; background: #242630; color: #fff; border-radius: 7px; padding: 9px 14px; font: inherit; cursor: pointer; }
+  button:hover, .file-picker:hover { background: #343744; }
+  input[type=range] { flex: 1 1 220px; accent-color: #ffe66d; cursor: pointer; }
+  .time { font-variant-numeric: tabular-nums; color: #dbdce5; white-space: nowrap; }
+  .file-picker input { display: none; }
+  .note { color: #a9a9b1; font-size: 13px; margin: 14px 0 0; }
+  .editor-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin: 24px 0 10px; }
+  .editor-head h2 { font-size: 18px; margin: 0; }
+  .editor-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .json-toggle { display: inline-flex; align-items: center; gap: 5px; color: #dadbe3; font-size: 13px; cursor: pointer; }
+  .json-toggle input { accent-color: #ffe66d; }
+  .editor-help { color: #a9a9b1; font-size: 13px; margin: 0 0 12px; }
+  .editor { max-height: 440px; overflow: auto; border: 1px solid #41434c; border-radius: 9px; background: #191a22; }
+  .edit-group { padding: 14px; border-bottom: 1px solid #34343b; }
+  .edit-group:last-child { border-bottom: none; }
+  .edit-group.is-current { background: #242630; }
+  .edit-group-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; color: #dadbe3; font-size: 13px; }
+  .jump { padding: 4px 9px; font-size: 12px; }
+  .edit-line { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+  .word-field { display: inline-flex; flex-direction: column; gap: 2px; }
+  .word-field input { min-width: 46px; max-width: 190px; border: 1px solid #555865; border-radius: 5px; background: #11121a; color: #fff; font: inherit; padding: 5px 6px; }
+  .word-field input:focus { outline: 2px solid #ffe66d; outline-offset: 1px; }
+  .word-field small { font-size: 10px; color: #adb0bc; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Caption render preview</h1>
+  <p class="sub">Play or scrub the transcript timing. Load your video to preview captions over the footage.</p>
+  <div class="stage" id="stage">
+    <video id="video" playsinline preload="metadata"></video>
+    <div class="placeholder"><strong>Video not supplied</strong><span>Caption playback uses the original word timestamps.</span></div>
+    <div class="caption-layer" id="captions" aria-live="off"></div>
+  </div>
+  <div class="controls">
+    <button id="play" type="button">Play</button>
+    <input id="scrub" type="range" min="0" max="30.92" step="0.001" value="0" aria-label="Playhead">
+    <span class="time" id="time">0:00.00 / 0:30.92</span>
+    <label class="file-picker">Load video <input id="file" type="file" accept="video/*"></label>
+  </div>
+  <p class="note">Preview only: no video was supplied. The local video stays in your browser; its audio plays when loaded. Timing retains the supplied word timestamps, including pauses and the zero-duration word.</p>
+  <div class="editor-head"><h2>Edit captions</h2><div class="editor-actions"><label class="json-toggle"><input type="checkbox" id="show-json">Show JSON download</label><button type="button" id="download" hidden>Download edited JSON</button><button type="button" id="reset">Reset text</button></div></div>
+  <p class="editor-help">Edit each word below. The preview updates as you type; timestamps and grouping stay fixed. Changes are saved in this browser.</p>
+  <div class="editor" id="editor" aria-label="Caption word editor"></div>
+</main>
+<script>
+// Each entry is [source word text, original start, original end]. No cue times are added.
+const segments = [
+  [[" Yes,",0,0.54],[" hit",4.8,5.58],[" it",5.58,6.1],[" because",6.1,6.88],[" I",6.88,7.16],[" taste",7.16,7.38],[" real",7.38,7.66],[" banana.",7.66,8.04],[" I",8.94,9.44]],
+  [[" Tastes",9.44,9.64],[" real",9.64,9.92],[" banana.",9.92,10.38],[" Let's",10.38,10.8],[" go",10.8,10.9],[" from",10.9,11.1],[" the",11.1,11.2],[" thing",11.2,11.64],[" like",11.64,11.88],[" that.",11.88,12.06],[" The",12.34,12.56],[" thing",12.56,12.72],[" is",12.72,12.94],[" usually",12.94,13.34],[" when",13.34,13.58],[" I",13.58,13.68],[" have",13.68,13.84],[" something",13.84,14.18],[" banana",14.18,14.56]],
+  [[" It's",14.56,15.06],[" like",15.06,15.16],[" that",15.16,15.3],[" artificial",15.3,15.8],[" gold",15.8,16.18],[" banana.",16.18,16.76],[" Yeah,",17.02,17.18],[" like",17.22,17.4],[" the",17.4,17.46],[" banana",17.46,17.66],[" ice",17.66,17.98],[" cream",17.98,18.14],[" sometimes.",18.14,18.52],[" Yeah,",18.58,19.08],[" I",19.08,19.44],[" know",19.44,19.54],[" exactly",19.54,19.76],[" what",19.76,19.92],[" you're",19.92,19.92],[" talking",19.92,20.12],[" about",20.12,20.36]],
+  [[" But",20.36,20.88],[" this",20.88,21.12],[" tastes",21.12,21.28],[" like",21.28,21.58],[" real",21.58,22.06],[" banana",22.06,22.56]],
+  [[" It's",25.44,25.94],[" hitting",25.94,26.08],[" right",26.08,26.34],[" literally",26.34,27],[" in",27,27.44],[" the",27.44,27.6],[" ice",27.6,27.82],[" group.",27.82,28.08],[" Oh",28.2,28.36],[" unbelievable.",28.36,29.52],[" You",29.9,30.4],[" have",30.4,30.52],[" another",30.52,30.76],[" one",30.76,30.92]]
+];
+// [segment, first word, last word] for each authored line in caption_design.json.
+const groups = [
+  [[[0,0,0]]],
+  [[[0,1,4]],[[0,5,7]]],
+  [[[0,8,8]]],
+  [[[1,0,2]]],
+  [[[1,3,6]],[[1,7,9]]],
+  [[[1,10,14]],[[1,15,18]]],
+  [[[2,0,2]],[[2,3,5]]],
+  [[[2,6,8]],[[2,9,12]]],
+  [[[2,13,16]],[[2,17,20]]],
+  [[[3,0,3]],[[3,4,5]]],
+  [[[4,0,3]],[[4,4,7]]],
+  [[[4,8,9]]],
+  [[[4,10,13]]]
+];
+const originalSegments = segments.map(segment => segment.map(word => [...word]));
+const storageKey = 'caption-preview-edits-v1';
+try {
+  const saved = JSON.parse(localStorage.getItem(storageKey));
+  if (Array.isArray(saved) && saved.length === segments.length && saved.every((row, i) => Array.isArray(row) && row.length === segments[i].length)) {
+    saved.forEach((row, i) => row.forEach((text, j) => {
+      if (typeof text === 'string') segments[i][j][0] = text;
+    }));
+  }
+} catch { /* Browser storage may be unavailable. */ }
+const layer = document.getElementById('captions');
+const editor = document.getElementById('editor');
+const fields = segments.map(row => row.map(() => null));
+function styleWord(span, text) {
+  const token = text.toLowerCase().replace(/[^a-z]/g, '');
+  span.classList.toggle('is-flavor', ['real','banana','ice','cream'].includes(token));
+  span.classList.toggle('is-artificial', ['artificial','gold'].includes(token));
+  span.classList.toggle('is-reaction', token === 'unbelievable');
+}
+function saveText() {
+  try { localStorage.setItem(storageKey, JSON.stringify(segments.map(row => row.map(word => word[0])))); } catch {}
+}
+const rendered = groups.map((lines, groupIndex) => {
+  const section = document.createElement('div');
+  section.className = 'caption-group';
+  const card = document.createElement('div');
+  card.className = 'edit-group';
+  const header = document.createElement('div');
+  header.className = 'edit-group-head';
+  const label = document.createElement('span');
+  const jump = document.createElement('button');
+  jump.type = 'button';
+  jump.className = 'jump';
+  jump.textContent = 'Jump to caption';
+  header.append(label, jump);
+  card.append(header);
+  const words = [];
+  for (const ranges of lines) {
+    const line = document.createElement('span');
+    line.className = 'caption-line';
+    const editLine = document.createElement('div');
+    editLine.className = 'edit-line';
+    let first = true;
+    for (const [segment, from, through] of ranges) {
+      for (let index = from; index <= through; index++) {
+        const [sourceText, start, end] = segments[segment][index];
+        const text = sourceText.replace(/^\s+/, '');
+        if (!first) line.append(document.createTextNode(' '));
+        first = false;
+        const span = document.createElement('span');
+        span.className = 'caption-word';
+        span.textContent = text;
+        styleWord(span, text);
+        if (end > start) span.style.setProperty('--word-duration', `${end-start}s`);
+        line.append(span);
+        words.push({span,start,end});
+        const field = document.createElement('label');
+        field.className = 'word-field';
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.value = text;
+        input.setAttribute('aria-label', `Caption ${groupIndex + 1}, word ${index + 1}, ${format(start)} to ${format(end)}`);
+        const stamp = document.createElement('small');
+        stamp.textContent = `${format(start)}–${format(end)}`;
+        field.append(input, stamp);
+        editLine.append(field);
+        fields[segment][index] = input;
+        input.addEventListener('input', () => {
+          const prefix = originalSegments[segment][index][0].match(/^\s*/)[0];
+          segments[segment][index][0] = prefix + input.value;
+          span.textContent = input.value;
+          styleWord(span, input.value);
+          saveText();
+        });
+      }
+    }
+    section.append(line);
+    card.append(editLine);
+  }
+  layer.append(section);
+  editor.append(card);
+  const start = words[0].start, end = words.at(-1).end;
+  label.textContent = `Caption ${groupIndex + 1} · ${format(start)}–${format(end)}`;
+  jump.addEventListener('click', () => {
+    position = start;
+    if (videoURL) video.currentTime = position;
+    previousFrame = null;
+    paint();
+  });
+  return {section,card,words,start,end};
+});
+document.getElementById('reset').addEventListener('click', () => {
+  originalSegments.forEach((row, i) => row.forEach((word, j) => {
+    fields[i][j].value = word[0].replace(/^\s+/, '');
+    fields[i][j].dispatchEvent(new Event('input', {bubbles: true}));
+  }));
+});
+const jsonToggle = document.getElementById('show-json');
+const downloadButton = document.getElementById('download');
+jsonToggle.addEventListener('change', () => { downloadButton.hidden = !jsonToggle.checked; });
+document.getElementById('download').addEventListener('click', () => {
+  const payload = {segments, groups};
+  const url = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], {type: 'application/json'}));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'edited_captions.json';
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+const duration = segments.at(-1).at(-1)[2];
+const scrub = document.getElementById('scrub');
+const time = document.getElementById('time');
+const play = document.getElementById('play');
+const video = document.getElementById('video');
+const stage = document.getElementById('stage');
+let position = 0, playing = false, previousFrame = null, videoURL = null;
+function format(seconds) { const m = Math.floor(seconds / 60); const s = (seconds % 60).toFixed(2).padStart(5,'0'); return `${m}:${s}`; }
+function paint() {
+  scrub.value = String(position);
+  time.textContent = `${format(position)} / ${format(duration)}`;
+  for (const group of rendered) {
+    const visible = position >= group.start && position < group.end;
+    group.section.classList.toggle('is-visible', visible);
+    group.card.classList.toggle('is-current', visible);
+    for (const {span,start,end} of group.words) {
+      span.classList.toggle('is-active', visible && end > start && position >= start && position < end);
+      span.classList.toggle('is-spoken', position >= end);
+    }
+  }
+}
+function stop() { playing = false; previousFrame = null; play.textContent = 'Play'; if (videoURL) video.pause(); }
+function frame(timestamp) {
+  if (!playing) return;
+  if (videoURL) position = Math.min(duration, video.currentTime);
+  else if (previousFrame !== null) position = Math.min(duration, position + (timestamp-previousFrame)/1000);
+  previousFrame = timestamp;
+  paint();
+  if (position >= duration || (videoURL && video.ended)) stop();
+  else requestAnimationFrame(frame);
+}
+play.addEventListener('click', async () => {
+  if (playing) { stop(); return; }
+  if (position >= duration) position = 0;
+  if (videoURL) {
+    video.currentTime = position;
+    try { await video.play(); } catch { return; }
+  }
+  playing = true;
+  play.textContent = 'Pause';
+  previousFrame = null;
+  requestAnimationFrame(frame);
+});
+scrub.addEventListener('input', () => {
+  position = Number(scrub.value);
+  if (videoURL) video.currentTime = position;
+  previousFrame = null;
+  paint();
+});
+document.getElementById('file').addEventListener('change', event => {
+  const file = event.target.files[0];
+  if (!file) return;
+  stop();
+  if (videoURL) URL.revokeObjectURL(videoURL);
+  videoURL = URL.createObjectURL(file);
+  video.src = videoURL;
+  stage.classList.add('has-video');
+  position = 0;
+  paint();
+});
+video.addEventListener('ended', stop);
+paint();
+</script>
+</body>
+</html>
