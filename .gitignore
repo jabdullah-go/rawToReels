@@ -8,3 +8,4 @@ handoff/
 *.mp4
 *.mov
 *.wav
+.venv/
