@@ -56,26 +56,29 @@
 <body>
 <main>
   <h1>Caption render preview</h1>
-  <p class="sub">Play or scrub the transcript timing. Load your video to preview captions over the footage.</p>
+  <p class="sub">Load a video, then add, edit, or remove captions independently.</p>
   <div class="stage" id="stage">
     <video id="video" playsinline preload="metadata"></video>
-    <div class="placeholder"><strong>Video not supplied</strong><span>Caption playback uses the original word timestamps.</span></div>
+    <div class="placeholder"><strong>No video loaded</strong><span>Choose a video to preview it here.</span></div>
     <div class="caption-layer" id="captions" aria-live="off"></div>
   </div>
   <div class="controls">
     <button id="play" type="button">Play</button>
     <input id="scrub" type="range" min="0" max="30.92" step="0.001" value="0" aria-label="Playhead">
     <span class="time" id="time">0:00.00 / 0:30.92</span>
-    <label class="file-picker">Load video <input id="file" type="file" accept="video/*"></label>
+    <label class="file-picker">Load video <input id="file" type="file" accept="video/*,.mov,.mp4"></label>
+    <label class="file-picker">Load caption JSON <input id="caption-file" type="file" accept=".json,application/json"></label>
+    <button id="clear-captions" type="button">Remove captions</button>
+    <button id="restore-sample" type="button" hidden>Restore sample captions</button>
   </div>
-  <p class="note">Preview only: no video was supplied. The local video stays in your browser; its audio plays when loaded. Timing retains the supplied word timestamps, including pauses and the zero-duration word.</p>
+  <p class="note" id="caption-status">Sample transcript loaded. Remove captions to preview a different video without this transcript; load another transcript JSON when you have one. Removing captions leaves your video loaded.</p>
   <div class="editor-head"><h2>Edit captions</h2><div class="editor-actions"><label class="json-toggle"><input type="checkbox" id="show-json">Show JSON download</label><button type="button" id="download" hidden>Download edited JSON</button><button type="button" id="reset">Reset text</button></div></div>
-  <p class="editor-help">Edit each word below. The preview updates as you type; timestamps and grouping stay fixed. Changes are saved in this browser.</p>
+  <p class="editor-help">Edit each word below. Loaded captions keep their supplied word timestamps. Sample text edits save in this browser; imported JSON remains in this tab until you reload.</p>
   <div class="editor" id="editor" aria-label="Caption word editor"></div>
 </main>
 <script>
 // Each entry is [source word text, original start, original end]. No cue times are added.
-const segments = [
+let segments = [
   [[" Yes,",0,0.54],[" hit",4.8,5.58],[" it",5.58,6.1],[" because",6.1,6.88],[" I",6.88,7.16],[" taste",7.16,7.38],[" real",7.38,7.66],[" banana.",7.66,8.04],[" I",8.94,9.44]],
   [[" Tastes",9.44,9.64],[" real",9.64,9.92],[" banana.",9.92,10.38],[" Let's",10.38,10.8],[" go",10.8,10.9],[" from",10.9,11.1],[" the",11.1,11.2],[" thing",11.2,11.64],[" like",11.64,11.88],[" that.",11.88,12.06],[" The",12.34,12.56],[" thing",12.56,12.72],[" is",12.72,12.94],[" usually",12.94,13.34],[" when",13.34,13.58],[" I",13.58,13.68],[" have",13.68,13.84],[" something",13.84,14.18],[" banana",14.18,14.56]],
   [[" It's",14.56,15.06],[" like",15.06,15.16],[" that",15.16,15.3],[" artificial",15.3,15.8],[" gold",15.8,16.18],[" banana.",16.18,16.76],[" Yeah,",17.02,17.18],[" like",17.22,17.4],[" the",17.4,17.46],[" banana",17.46,17.66],[" ice",17.66,17.98],[" cream",17.98,18.14],[" sometimes.",18.14,18.52],[" Yeah,",18.58,19.08],[" I",19.08,19.44],[" know",19.44,19.54],[" exactly",19.54,19.76],[" what",19.76,19.92],[" you're",19.92,19.92],[" talking",19.92,20.12],[" about",20.12,20.36]],
@@ -83,7 +86,7 @@ const segments = [
   [[" It's",25.44,25.94],[" hitting",25.94,26.08],[" right",26.08,26.34],[" literally",26.34,27],[" in",27,27.44],[" the",27.44,27.6],[" ice",27.6,27.82],[" group.",27.82,28.08],[" Oh",28.2,28.36],[" unbelievable.",28.36,29.52],[" You",29.9,30.4],[" have",30.4,30.52],[" another",30.52,30.76],[" one",30.76,30.92]]
 ];
 // [segment, first word, last word] for each authored line in caption_design.json.
-const groups = [
+let groups = [
   [[[0,0,0]]],
   [[[0,1,4]],[[0,5,7]]],
   [[[0,8,8]]],
@@ -98,7 +101,8 @@ const groups = [
   [[[4,8,9]]],
   [[[4,10,13]]]
 ];
-const originalSegments = segments.map(segment => segment.map(word => [...word]));
+let originalSegments = segments.map(segment => segment.map(word => [...word]));
+let sampleActive = true;
 const storageKey = 'caption-preview-edits-v1';
 try {
   const saved = JSON.parse(localStorage.getItem(storageKey));
@@ -108,9 +112,12 @@ try {
     }));
   }
 } catch { /* Browser storage may be unavailable. */ }
+const sampleSegments = segments.map(row => row.map(word => [...word]));
+const sampleGroups = structuredClone(groups);
+try { if (localStorage.getItem('caption-preview-selection-v1') === 'none') { segments = []; groups = []; sampleActive = false; } } catch {}
 const layer = document.getElementById('captions');
 const editor = document.getElementById('editor');
-const fields = segments.map(row => row.map(() => null));
+let fields = segments.map(row => row.map(() => null));
 function styleWord(span, text) {
   const token = text.toLowerCase().replace(/[^a-z]/g, '');
   span.classList.toggle('is-flavor', ['real','banana','ice','cream'].includes(token));
@@ -118,9 +125,15 @@ function styleWord(span, text) {
   span.classList.toggle('is-reaction', token === 'unbelievable');
 }
 function saveText() {
+  if (!sampleActive) return;
   try { localStorage.setItem(storageKey, JSON.stringify(segments.map(row => row.map(word => word[0])))); } catch {}
 }
-const rendered = groups.map((lines, groupIndex) => {
+let rendered = [];
+function buildEditor() {
+  layer.replaceChildren();
+  editor.replaceChildren();
+  fields = segments.map(row => row.map(() => null));
+  rendered = groups.map((lines, groupIndex) => {
   const section = document.createElement('div');
   section.className = 'caption-group';
   const card = document.createElement('div');
@@ -188,7 +201,10 @@ const rendered = groups.map((lines, groupIndex) => {
     paint();
   });
   return {section,card,words,start,end};
-});
+  });
+  if (!rendered.length) editor.textContent = 'No captions loaded. Your video can still play.';
+}
+buildEditor();
 document.getElementById('reset').addEventListener('click', () => {
   originalSegments.forEach((row, i) => row.forEach((word, j) => {
     fields[i][j].value = word[0].replace(/^\s+/, '');
@@ -207,7 +223,90 @@ document.getElementById('download').addEventListener('click', () => {
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
-const duration = segments.at(-1).at(-1)[2];
+let captionDuration = segments.length ? Math.max(...segments.flat().map(word => word[2])) : 0;
+function totalDuration() { return videoURL && Number.isFinite(video.duration) ? video.duration : captionDuration; }
+function updateControls() {
+  const end = totalDuration();
+  scrub.max = String(end || 0);
+  position = Math.min(position, end || 0);
+  paint();
+}
+function setCaptions(nextSegments, nextGroups, isSample = false) {
+  stop();
+  segments = nextSegments;
+  groups = nextGroups;
+  sampleActive = isSample;
+  originalSegments = segments.map(row => row.map(word => [...word]));
+  captionDuration = segments.length ? Math.max(...segments.flat().map(word => word[2])) : 0;
+  buildEditor();
+  document.getElementById('reset').disabled = !segments.length;
+  document.getElementById('download').disabled = !segments.length;
+  document.getElementById('clear-captions').disabled = !segments.length;
+  document.getElementById('restore-sample').hidden = isSample;
+  document.getElementById('caption-status').textContent = segments.length
+    ? (isSample ? 'Sample captions loaded. Remove them to try another video.' : 'Caption JSON loaded. Removing captions keeps your video.')
+    : 'No captions loaded. Your video can still play. Load caption JSON or restore the sample.';
+  position = 0;
+  if (videoURL) video.currentTime = 0;
+  updateControls();
+}
+// Accept either this preview's exported JSON or the original transcript.json with segments[].words[].
+function readCaptions(data) {
+  let rows, layout;
+  if (Array.isArray(data.segments) && data.segments.every(row => Array.isArray(row))) {
+    rows = data.segments.map(row => row.map(word => [word[0], word[1], word[2]]));
+    layout = data.groups;
+  } else if (Array.isArray(data.segments) && data.segments.every(row => Array.isArray(row.words))) {
+    rows = data.segments.map(row => row.words.map(word => [word.text, word.start, word.end]));
+  } else throw Error('Expected transcript.json with segments[].words[] or exported JSON with segments and groups.');
+  if (!rows.length || !rows.every(row => row.length && row.every(([text,start,end]) =>
+    typeof text === 'string' && Number.isFinite(start) && Number.isFinite(end) && start >= 0 && end >= start))) {
+    throw Error('Caption words need text and valid start/end timestamps.');
+  }
+  if (!layout) {
+    layout = [];
+    rows.forEach((row, segment) => {
+      let lines = [], from = 0;
+      function finish(through) {
+        if (through < from) return;
+        lines.push([[segment, from, through]]);
+        if (lines.length === 2) { layout.push(lines); lines = []; }
+      }
+      for (let index = 0; index < row.length; index++) {
+        if (index > from && (index - from >= 6 || row[index][1] - row[index-1][2] > 0.75)) {
+          finish(index - 1);
+          from = index;
+        }
+      }
+      finish(row.length - 1);
+      if (lines.length) layout.push(lines);
+    });
+  }
+  if (!Array.isArray(layout) || !layout.length || !layout.every(group => Array.isArray(group) && group.length && group.every(line => Array.isArray(line) && line.length && line.every(range =>
+    Array.isArray(range) && range.length === 3 && range.every(Number.isInteger) && rows[range[0]] && range[1] >= 0 && range[2] >= range[1] && range[2] < rows[range[0]].length)))) {
+    throw Error('Caption groups must reference existing word indices.');
+  }
+  return [rows, layout];
+}
+const selectionKey = 'caption-preview-selection-v1';
+document.getElementById('clear-captions').addEventListener('click', () => {
+  try { localStorage.setItem(selectionKey, 'none'); } catch {}
+  setCaptions([], []);
+});
+document.getElementById('restore-sample').addEventListener('click', () => {
+  try { localStorage.removeItem(selectionKey); } catch {}
+  setCaptions(sampleSegments.map(row => row.map(word => [...word])), structuredClone(sampleGroups), true);
+});
+document.getElementById('caption-file').addEventListener('change', async event => {
+  const file = event.target.files[0];
+  if (!file) return;
+  try {
+    const [rows, layout] = readCaptions(JSON.parse(await file.text()));
+    try { localStorage.setItem(selectionKey, 'none'); } catch {}
+    setCaptions(rows, layout);
+  } catch (error) { document.getElementById('caption-status').textContent = `Could not load captions: ${error.message}`; }
+  event.target.value = '';
+});
 const scrub = document.getElementById('scrub');
 const time = document.getElementById('time');
 const play = document.getElementById('play');
@@ -217,7 +316,7 @@ let position = 0, playing = false, previousFrame = null, videoURL = null;
 function format(seconds) { const m = Math.floor(seconds / 60); const s = (seconds % 60).toFixed(2).padStart(5,'0'); return `${m}:${s}`; }
 function paint() {
   scrub.value = String(position);
-  time.textContent = `${format(position)} / ${format(duration)}`;
+  time.textContent = `${format(position)} / ${format(totalDuration())}`;
   for (const group of rendered) {
     const visible = position >= group.start && position < group.end;
     group.section.classList.toggle('is-visible', visible);
@@ -231,16 +330,17 @@ function paint() {
 function stop() { playing = false; previousFrame = null; play.textContent = 'Play'; if (videoURL) video.pause(); }
 function frame(timestamp) {
   if (!playing) return;
-  if (videoURL) position = Math.min(duration, video.currentTime);
-  else if (previousFrame !== null) position = Math.min(duration, position + (timestamp-previousFrame)/1000);
+  if (videoURL) position = Math.min(totalDuration(), video.currentTime);
+  else if (previousFrame !== null) position = Math.min(totalDuration(), position + (timestamp-previousFrame)/1000);
   previousFrame = timestamp;
   paint();
-  if (position >= duration || (videoURL && video.ended)) stop();
+  if (position >= totalDuration() || (videoURL && video.ended)) stop();
   else requestAnimationFrame(frame);
 }
 play.addEventListener('click', async () => {
   if (playing) { stop(); return; }
-  if (position >= duration) position = 0;
+  if (position >= totalDuration()) position = 0;
+  if (!totalDuration()) return;
   if (videoURL) {
     video.currentTime = position;
     try { await video.play(); } catch { return; }
@@ -265,10 +365,12 @@ document.getElementById('file').addEventListener('change', event => {
   video.src = videoURL;
   stage.classList.add('has-video');
   position = 0;
-  paint();
+  video.addEventListener('loadedmetadata', updateControls, {once: true});
+  updateControls();
 });
 video.addEventListener('ended', stop);
-paint();
+if (!segments.length) setCaptions([], []);
+else updateControls();
 </script>
 </body>
 </html>
